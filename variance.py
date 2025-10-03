@@ -1,242 +1,212 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-import os
+import plotly.express as px
 
-# --- Page Config ---
-st.set_page_config(page_title="Stock Variance Dashboard", layout="wide")
+# ===========================================================
+# --- Page Setup ---
+# ===========================================================
+st.set_page_config(page_title="Sales Insights Dashboard", layout="wide")
 
-# --- Outlets & Files ---
-outlets_files = {
-    "Safa Oud Metha": "SAO Stock Comparison On 15-Sep-2025 1 (1).Xlsx",
-    "Azhar GT": "AZT Stock.Xlsx",
-    "Superstore": "MSS Stock.Xlsx",
-    "Liwan": "LWN Stock.Xlsx",
-    "Blue Pearl": "BPS Stock.Xlsx",
-    "Sahat": "SAD Stock.Xlsx",
-    "TayTay": "TTD Stock Comparison On 29-Sep-2025 2.Xlsx"  # Added TayTay
-}
-
-# --- Passwords for each outlet ---
-outlet_passwords = {
-    "Safa Oud Metha": "123",
-    "Azhar GT": "1234",
-    "Superstore": "12345",
-    "Liwan": "123456",
-    "Blue Pearl": "1234567",
-    "Sahat": "12345678",
-    "TayTay": "123456789"  # Password for TayTay
-}
-
-# --- Sidebar: Select Outlet ---
-st.sidebar.header("🔐 Authentication")
-selected_outlet = st.sidebar.selectbox("Outlet", list(outlets_files.keys()))
-
-# Reset authentication when outlet changes
-if "last_outlet" not in st.session_state or st.session_state.last_outlet != selected_outlet:
-    st.session_state.authenticated = False
-    st.session_state.last_outlet = selected_outlet
-
-# --- Login form ---
-with st.sidebar.form("login_form"):
+# ===========================================================
+# --- Authentication Setup ---
+# ===========================================================
+def login():
+    st.title("🔐 Login to Sales Insights Dashboard")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
-    login_btn = st.form_submit_button("Login")
+    if st.button("Login"):
+        if username == "almadina" and password == "12345":
+            st.session_state["authenticated"] = True
+            st.success("✅ Login successful! Access granted.")
+            st.rerun()
+        else:
+            st.error("❌ Invalid username or password")
 
-if login_btn:
-    if username == "almadina" and password == outlet_passwords[selected_outlet]:
-        st.session_state.authenticated = True
-        st.success(f"✅ Login successful for {selected_outlet}")
-    else:
-        st.session_state.authenticated = False
-        st.error("❌ Invalid username or password")
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
 
-# Logout option
-if st.session_state.get("authenticated"):
-    if st.sidebar.button("🚪 Logout"):
-        st.session_state.authenticated = False
-        st.rerun()
-
-# If not logged in, stop execution
-if not st.session_state.get("authenticated", False):
-    st.warning(f"Please login to view data for **{selected_outlet}**")
+if not st.session_state["authenticated"]:
+    login()
     st.stop()
 
-# --- Load Data Function ---
-@st.cache_data
-def load_data(file_path):
-    df = pd.read_excel(file_path)
-    df.columns = df.columns.str.strip()
+# ===========================================================
+# --- Dashboard Code ---
+# ===========================================================
+st.title("📊SAFA oud mehta 2025 Sales Insights")
 
-    # Calculate Difference & Values
-    if 'Diff Stock' not in df.columns:
-        df['Diff Stock'] = df['Phys Stock'] - df['Book Stock']
+# --- Load Data ---
+df = pd.read_excel("2025 oud mehta sales.Xlsx")   # change filename
 
-    cost_col = "Cost Price"
-    if cost_col in df.columns:
-        df['Book Value'] = df['Book Stock'] * df[cost_col]
-        df['Phys Value'] = df['Phys Stock'] * df[cost_col]
-        df['Diff Value'] = df['Diff Stock'] * df[cost_col]
+# Ensure numeric
+numeric_cols = ["Qty Sold", "Total Sales", "Total Profit"]
+for col in numeric_cols:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    return df
+# Add GP%
+df["GP%"] = (df["Total Profit"] / df["Total Sales"]) * 100
 
-# --- Load the selected outlet's dataset ---
-file_path = outlets_files[selected_outlet]
-if not os.path.exists(file_path):
-    st.error(f"File for {selected_outlet} not found: {file_path}")
-    st.stop()
+# ===========================================================
+# --- Filters for Category & Subcategory ---
+# ===========================================================
+category_col = "Category"
+subcategory_col = "Category4"   # subcategory
 
-df = load_data(file_path)
+if category_col in df.columns:
+    categories = ["All"] + sorted(df[category_col].dropna().unique().tolist())
+    selected_category = st.sidebar.selectbox("📂 Select Category", categories)
 
-# --- Sidebar: Category Filter ---
-st.sidebar.header("Filters")
-categories = df['Category'].unique().tolist()
-selected_category = st.sidebar.selectbox("Select Category", ["All"] + categories)
+    if selected_category != "All":
+        df = df[df[category_col] == selected_category]
 
-# --- Filtered Data ---
-filtered_df = df.copy()
-if selected_category != "All":
-    filtered_df = filtered_df[filtered_df['Category'] == selected_category]
+    if subcategory_col in df.columns:
+        subcategories = ["All"] + sorted(df[subcategory_col].dropna().unique().tolist())
+        selected_subcat = st.sidebar.selectbox("🔖 Select Subcategory", subcategories)
 
-# --- Summary Metrics ---
-total_book_stock = filtered_df['Book Stock'].sum()
-total_phys_stock = filtered_df['Phys Stock'].sum()
-total_diff_stock = filtered_df['Diff Stock'].sum()
+        if selected_subcat != "All":
+            df = df[df[subcategory_col] == selected_subcat]
 
-total_book_value = filtered_df['Book Value'].sum()
-total_phys_value = filtered_df['Phys Value'].sum()
-total_diff_value = filtered_df['Diff Value'].sum()
-
-stock_variance_pct = (
-    (total_diff_stock / total_book_stock) * 100 if total_book_stock != 0 else 0
+# ===========================================================
+# --- Aggregate per Item ---
+# ===========================================================
+item_summary = (
+    df.groupby(["Item Code", "Items", category_col, subcategory_col], dropna=False)
+    .agg({
+        "Qty Sold": "sum",
+        "Total Sales": "sum",
+        "Total Profit": "sum"
+    })
+    .reset_index()
 )
+item_summary["GP%"] = (item_summary["Total Profit"] / item_summary["Total Sales"]) * 100
 
-# --- Dashboard Title ---
-st.title(f"📊 Stock Variance Dashboard - {selected_outlet}")
+# Overall KPIs
+total_sales = item_summary["Total Sales"].sum()
+total_profit = item_summary["Total Profit"].sum()
+total_qty = item_summary["Qty Sold"].sum()
 
-# --- Summary Section ---
-st.markdown("### 📊 Stock Summary")
-col1, col2, col3, col4 = st.columns(4, gap="large")
-
-with col1:
-    st.markdown(
-        f"<h5>System Stock</h5>"
-        f"<p style='font-size:28px; font-weight:bold;'>{total_book_stock:,.0f}</p>"
-        f"<p style='font-size:14px; color:gray;'>AED {total_book_value:,.0f}</p>",
-        unsafe_allow_html=True
-    )
-
-with col2:
-    st.markdown(
-        f"<h5>Physical Stock</h5>"
-        f"<p style='font-size:28px; font-weight:bold;'>{total_phys_stock:,.0f}</p>"
-        f"<p style='font-size:14px; color:gray;'>AED {total_phys_value:,.0f}</p>",
-        unsafe_allow_html=True
-    )
-
-with col3:
-    st.markdown(
-        f"<h5>Stock Difference</h5>"
-        f"<p style='font-size:28px; font-weight:bold;'>{total_diff_stock:,.0f}</p>"
-        f"<p style='font-size:14px; color:gray;'>AED {total_diff_value:,.0f}</p>",
-        unsafe_allow_html=True
-    )
-
-with col4:
-    st.markdown(
-        f"<h5>Stock Variance %</h5>"
-        f"<p style='font-size:28px; font-weight:bold;'>{stock_variance_pct:.2f} %</p>",
-        unsafe_allow_html=True
-    )
+st.markdown("### 📌 Key Highlights")
+col1, col2, col3 = st.columns(3)
+col1.metric("💰 Total Sales", f"{total_sales:,.0f}")
+col2.metric("📈 Total Profit", f"{total_profit:,.0f}")
+col3.metric("📦 Total Quantity Sold", f"{total_qty:,.0f}")
 
 st.markdown("---")
 
-# --- Top 30 by Quantity ---
-filtered_df['Abs Diff'] = filtered_df['Diff Stock'].abs()
-top_30_qty = filtered_df.sort_values('Abs Diff', ascending=False).head(30)
-
-st.subheader("Top 30 Items: Quantity vs Value")
-fig_qty = go.Figure()
-fig_qty.add_trace(go.Bar(
-    y=top_30_qty['Item Name'],
-    x=top_30_qty['Diff Stock'],
-    name='Stock Difference (Qty)',
-    orientation='h',
-    marker_color='steelblue',
-    customdata=top_30_qty[['Category','Item No','Barcode','Book Stock','Phys Stock','Diff Value']],
-    hovertemplate=(
-        "<b>%{y}</b><br>Category: %{customdata[0]}<br>Item No: %{customdata[1]}<br>"
-        "Barcode: %{customdata[2]}<br>Book Stock: %{customdata[3]}<br>Phys Stock: %{customdata[4]}<br>"
-        "Stock Diff: %{x}<br>Stock Diff Value: AED %{customdata[5]:,.0f}<extra></extra>"
+# ===========================================================
+# --- Function to Plot Top N Items ---
+# ===========================================================
+def plot_top(df, metric, title, color, n=50):
+    top = df.sort_values(metric, ascending=False).head(n)
+    fig = px.bar(
+        top,
+        x=metric,
+        y="Items",
+        orientation="h",
+        text=metric,
+        color=metric,
+        color_continuous_scale=color,
+        title=title,
+        hover_data={
+            "Item Code": True,
+            "Category": True,
+            "Category4": True,
+            "Qty Sold": ":,.0f",
+            "Total Sales": ":,.0f",
+            "Total Profit": ":,.0f",
+            "GP%": ":.2f"
+        }
     )
-))
-fig_qty.add_trace(go.Bar(
-    y=top_30_qty['Item Name'],
-    x=top_30_qty['Diff Value'],
-    name='Stock Difference Value (AED)',
-    orientation='h',
-    marker_color='orange',
-    customdata=top_30_qty[['Category','Item No','Barcode','Book Stock','Phys Stock','Diff Stock']],
-    hovertemplate=(
-        "<b>%{y}</b><br>Category: %{customdata[0]}<br>Item No: %{customdata[1]}<br>"
-        "Barcode: %{customdata[2]}<br>Book Stock: %{customdata[3]}<br>Phys Stock: %{customdata[4]}<br>"
-        "Stock Diff: %{customdata[5]}<br>Stock Diff Value: AED %{x:,.0f}<extra></extra>"
+    fig.update_traces(texttemplate='%{text:,.0f}', textposition="outside")
+    fig.update_layout(
+        height=1200,
+        yaxis=dict(autorange="reversed"),
+        margin=dict(l=10, r=10, t=40, b=10),
+        coloraxis_showscale=False
     )
-))
-fig_qty.update_layout(barmode='group', yaxis=dict(autorange='reversed'), xaxis_title="Quantity / Value",
-                      height=800, legend_title="Metrics", margin=dict(t=20, b=20))
-st.plotly_chart(fig_qty, use_container_width=True)
+    return fig, top
 
-# --- Top 30 Table by Quantity ---
-st.subheader("📄 Top 30 Items Details (Quantity Priority)")
-key_columns = ['Category', 'Item Name', 'Item No', 'Barcode', 'Book Stock', 'Phys Stock', 'Diff Stock', 'Book Value', 'Phys Value', 'Diff Value']
-available_columns = [col for col in key_columns if col in top_30_qty.columns]
-st.dataframe(top_30_qty[available_columns])
+# ===========================================================
+# --- Category & Subcategory Graphs ---
+# ===========================================================
+st.markdown("## 📊 Category & Subcategory Analysis")
+
+# Category wise
+cat_summary = (
+    df.groupby(category_col)
+    .agg({"Qty Sold":"sum", "Total Sales":"sum", "Total Profit":"sum"})
+    .reset_index()
+)
+cat_summary["GP%"] = (cat_summary["Total Profit"] / cat_summary["Total Sales"]) * 100
+
+st.subheader("📂 Category-wise Sales & Profit")
+fig_cat = px.bar(cat_summary, x="Total Sales", y=category_col, orientation="h", color="Total Profit", text="Total Sales",
+                 color_continuous_scale="Blues", hover_data={"GP%":":.2f"})
+fig_cat.update_traces(texttemplate='%{text:,.0f}', textposition="outside")
+st.plotly_chart(fig_cat, use_container_width=True)
+
+# Subcategory wise
+subcat_summary = (
+    df.groupby([category_col, subcategory_col])
+    .agg({"Qty Sold":"sum", "Total Sales":"sum", "Total Profit":"sum"})
+    .reset_index()
+)
+subcat_summary["GP%"] = (subcat_summary["Total Profit"] / subcat_summary["Total Sales"]) * 100
+
+st.subheader("🔖 Subcategory-wise Sales & Profit")
+fig_subcat = px.bar(subcat_summary, x="Total Sales", y=subcategory_col, orientation="h", color="Total Profit", text="Total Sales",
+                    color_continuous_scale="Greens", hover_data={"GP%":":.2f"})
+fig_subcat.update_traces(texttemplate='%{text:,.0f}', textposition="outside")
+st.plotly_chart(fig_subcat, use_container_width=True)
 
 st.markdown("---")
 
-# --- Top 30 by Value ---
-top_30_value = filtered_df.sort_values('Diff Value', ascending=False).head(30)
-st.subheader("Top 30 Items: Value Priority")
-fig_val = go.Figure()
-fig_val.add_trace(go.Bar(
-    y=top_30_value['Item Name'],
-    x=top_30_value['Diff Stock'],
-    name='Stock Difference (Qty)',
-    orientation='h',
-    marker_color='steelblue',
-    customdata=top_30_value[['Category','Item No','Barcode','Book Stock','Phys Stock','Diff Value']],
-    hovertemplate=(
-        "<b>%{y}</b><br>Category: %{customdata[0]}<br>Item No: %{customdata[1]}<br>"
-        "Barcode: %{customdata[2]}<br>Book Stock: %{customdata[3]}<br>Phys Stock: %{customdata[4]}<br>"
-        "Stock Diff: %{x}<br>Stock Diff Value: AED %{customdata[5]:,.0f}<extra></extra>"
-    )
-))
-fig_val.add_trace(go.Bar(
-    y=top_30_value['Item Name'],
-    x=top_30_value['Diff Value'],
-    name='Stock Difference Value (AED)',
-    orientation='h',
-    marker_color='orange',
-    customdata=top_30_value[['Category','Item No','Barcode','Book Stock','Phys Stock','Diff Stock']],
-    hovertemplate=(
-        "<b>%{y}</b><br>Category: %{customdata[0]}<br>Item No: %{customdata[1]}<br>"
-        "Barcode: %{customdata[2]}<br>Book Stock: %{customdata[3]}<br>Phys Stock: %{customdata[4]}<br>"
-        "Stock Diff: %{customdata[5]}<br>Stock Diff Value: AED %{x:,.0f}<extra></extra>"
-    )
-))
-fig_val.update_layout(barmode='group', yaxis=dict(autorange='reversed'), xaxis_title="Quantity / Value",
-                      height=800, legend_title="Metrics", margin=dict(t=20, b=20))
-st.plotly_chart(fig_val, use_container_width=True)
+# ===========================================================
+# --- Tabs (Sales, Profit, Qty, High/Low Analysis) ---
+# ===========================================================
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "💰 Sales", 
+    "📈 Profit", 
+    "📦 Quantity", 
+    "⚠️ High Sales, Low Profit",
+    "💡 Low Sales, High Profit"
+])
 
-# --- Top 30 Table by Value ---
-st.subheader("📄 Top 30 Items Details (Value Priority)")
-available_columns_value = [col for col in key_columns if col in top_30_value.columns]
-st.dataframe(top_30_value[available_columns_value])
+# --- Tab 1: Sales ---
+with tab1:
+    fig_sales, top_sales = plot_top(item_summary, "Total Sales", "Top 50 Items by Sales", "Blues", n=50)
+    st.plotly_chart(fig_sales, use_container_width=True)
 
-st.markdown("---")
+# --- Tab 2: Profit ---
+with tab2:
+    fig_profit, top_profit = plot_top(item_summary, "Total Profit", "Top 50 Items by Profit", "Greens", n=50)
+    st.plotly_chart(fig_profit, use_container_width=True)
 
-# --- Remaining Items Table ---
-st.subheader("📄 All Remaining Items by Category")
-remaining_df = filtered_df.drop(top_30_qty.index.union(top_30_value.index))
-st.dataframe(remaining_df[available_columns].sort_values(['Category','Diff Stock'], ascending=[True, False]))
+# --- Tab 3: Quantity ---
+with tab3:
+    fig_qty, top_qty = plot_top(item_summary, "Qty Sold", "Top 50 Items by Quantity Sold", "Oranges", n=50)
+    st.plotly_chart(fig_qty, use_container_width=True)
+
+# --- Tab 4: High Sales, Low Profit ---
+with tab4:
+    qty_threshold = item_summary["Qty Sold"].quantile(0.75)
+    profit_threshold = item_summary["Total Profit"].quantile(0.25)
+    problem_items = item_summary[
+        (item_summary["Qty Sold"] >= qty_threshold) & 
+        (item_summary["Total Profit"] <= profit_threshold)
+    ].sort_values("Qty Sold", ascending=False)
+
+    st.subheader("⚠️ Items with High Quantity Sold but Low Profit")
+    st.dataframe(problem_items[["Item Code","Items","Category","Category4","Qty Sold","Total Sales","Total Profit","GP%"]])
+
+# --- Tab 5: Low Sales, High Profit ---
+with tab5:
+    qty_threshold = item_summary["Qty Sold"].quantile(0.25)
+    profit_threshold = item_summary["Total Profit"].quantile(0.75)
+    strong_items = item_summary[
+        (item_summary["Qty Sold"] <= qty_threshold) & 
+        (item_summary["Total Profit"] >= profit_threshold)
+    ].sort_values("Total Profit", ascending=False)
+
+    st.subheader("💡 Items with Low Sales but High Profit")
+    st.dataframe(strong_items[["Item Code","Items","Category","Category4","Qty Sold","Total Sales","Total Profit","GP%"]])
